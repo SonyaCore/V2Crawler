@@ -9,6 +9,11 @@ import typing
 import urllib.parse
 
 import base
+import aiohttp
+import asyncio
+
+from typing import Optional , List
+
 
 _logger = logging.getLogger(__name__)
 _SINGLE_MEDIA_LINK_PATTERN = re.compile(r'^https://t\.me/[^/]+/\d+\?single$')
@@ -440,3 +445,160 @@ class TelegramChannelScraper(base.Scraper):
                 channel_data[counter_type] = base.IntWithGranularity(value, granularity)
 
         return Channel(**channel_data)
+    
+
+class GitHubScraper:
+    """Simple GitHub scraper that fetches exact URLs provided by user"""
+    
+    def __init__(self, rate_limit_delay: float = 1.0):
+        self.rate_limit_delay = rate_limit_delay
+        self.session = None
+        
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=100),
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        )
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    def convert_to_raw_url(self, url: str) -> str:
+        """Convert GitHub URLs to raw content URLs if needed"""
+        try:
+            # Already a raw URL or external URL
+            if 'raw.githubusercontent.com' in url or 'github.com' not in url:
+                return url
+                
+            if '/blob/' in url:
+                return url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+                
+            if 'github.com' in url:
+                return url.replace('github.com', 'raw.githubusercontent.com')
+                
+            return url
+            
+        except Exception as e:
+            _logger.error(f"Error converting GitHub URL {url}: {e}")
+            return url
+    
+    async def fetch_content(self, url: str) -> Optional[str]:
+        """Fetch content from any URL"""
+        try:
+            await asyncio.sleep(self.rate_limit_delay)  # Rate limiting
+            
+            _logger.debug(f"Fetching content from: {url}")
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    _logger.info(f"Successfully fetched {len(content)} characters from {url}")
+                    return content
+                elif response.status == 404:
+                    _logger.warning(f"File not found (404): {url}")
+                    return None
+                else:
+                    _logger.warning(f"HTTP {response.status} for {url}")
+                    return None
+                    
+        except asyncio.TimeoutError:
+            _logger.error(f"Timeout fetching {url}")
+            return None
+        except Exception as e:
+            _logger.error(f"Error fetching {url}: {e}")
+            return None
+    
+    async def scrape_url(self, url: str) -> Optional[str]:
+        """Scrape a single URL for content"""
+        try:
+            _logger.info(f"Processing URL: {url}")
+            
+            # Convert to raw URL if it's a GitHub URL
+            raw_url = self.convert_to_raw_url(url)
+            
+            if raw_url != url:
+                _logger.info(f"Converted to raw URL: {raw_url}")
+            
+            # Fetch the content
+            content = await self.fetch_content(raw_url)
+            
+            if content:
+                # Basic validation - check if it has any VPN-like content
+                if self.looks_like_vpn_content(content):
+                    _logger.info(f"Content appears to contain VPN links: {len(content)} chars")
+                else:
+                    _logger.info(f"Content fetched but no obvious VPN patterns detected: {len(content)} chars")
+                
+                return content
+            else:
+                _logger.warning(f"No content retrieved from {raw_url}")
+                return None
+                
+        except Exception as e:
+            _logger.error(f"Error processing URL {url}: {e}")
+            return None
+    
+    def looks_like_vpn_content(self, content: str) -> bool:
+        """Basic check if content might contain VPN configs"""
+        if not content:
+            return False
+            
+        # Check for VPN protocol patterns
+        vpn_patterns = [
+            r'vmess://',
+            r'vless://',
+            r'ss://',
+            r'trojan://',
+            r'ssr://',
+            # Also check for base64-like patterns which might be encoded configs
+            r'[A-Za-z0-9+/]{20,}={0,2}',
+            # Check for common config keywords
+            r'server.*port',
+            r'"address"',
+            r'"port"',
+            r'"id"',
+            r'"host"'
+        ]
+        
+        content_lower = content.lower()
+        for pattern in vpn_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
+                
+        return False
+
+
+class SimpleGitHubChannelScraper:
+    """GitHub scraper that mimics the interface of TelegramChannelScraper"""
+    
+    def __init__(self, urls: List[str], rate_limit_delay: float = 1.0):
+        self.urls = urls if isinstance(urls, list) else [urls]
+        self.rate_limit_delay = rate_limit_delay
+        
+    class GitHubPost:
+        """Mock post object to match Telegram scraper interface"""
+        def __init__(self, content: str, url: str):
+            self.content = content
+            self.url = url
+    
+    async def get_items(self) -> List[GitHubPost]:
+        """Get items (content) from GitHub URLs"""
+        items = []
+        
+        async with GitHubScraper(self.rate_limit_delay) as scraper:
+            for url in self.urls:
+                try:
+                    content = await scraper.scrape_url(url)
+                    if content:
+                        items.append(self.GitHubPost(content, url))
+                        _logger.info(f"Added content from {url}")
+                    else:
+                        _logger.warning(f"No content retrieved from {url}")
+                except Exception as e:
+                    _logger.error(f"Error processing GitHub URL {url}: {e}")
+                    
+        _logger.info(f"Retrieved content from {len(items)} out of {len(self.urls)} URLs")
+        return items

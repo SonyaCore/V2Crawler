@@ -16,8 +16,8 @@ import manager
 import traceback
 
 # req session
-import io
-import aiohttp
+# import io
+# import aiohttp
 
 # utils
 from utils import read_channels_from_file , read_github_urls_from_file
@@ -43,9 +43,6 @@ class UnifiedChannelScraper:
         self.github_urls = github_urls or []
         self.github_rate_limit = github_rate_limit
         
-        # Import extractor and duplicate checker (assuming they exist in your project)
-        import extractor
-        import duplicate
         
         self.extractor = extractor.VPNLinkExtractor()
         self.duplicate_checker = duplicate.DuplicateChecker()
@@ -54,8 +51,6 @@ class UnifiedChannelScraper:
         """Scrape a single Telegram channel"""
         try:
             logger.info(f"Scraping Telegram channel: {channel}")
-            
-            import scrapper  # Your existing scrapper module
             scraper = scrapper.TelegramChannelScraper(channel)
             items = scraper.get_items()
 
@@ -81,7 +76,7 @@ class UnifiedChannelScraper:
         try:
             logger.info(f"Scraping {len(urls)} GitHub URLs")
             
-            github_scraper = extractor.SimpleGitHubChannelScraper(urls, self.github_rate_limit)
+            github_scraper = scrapper.SimpleGitHubChannelScraper(urls, self.github_rate_limit)
             items = await github_scraper.get_items()
 
             all_links = {"vmess": [], "vless": [], "ss": [], "trojan": [], "ssr": []}
@@ -115,11 +110,9 @@ class UnifiedChannelScraper:
         """Scrape all sources (Telegram and GitHub) concurrently"""
         tasks = []
         
-        # Add Telegram channel tasks
         for channel in self.telegram_channels:
             tasks.append(self.scrape_telegram_channel(channel))
             
-        # Add GitHub scraping task (batch process)
         if self.github_urls:
             tasks.append(self.scrape_github_urls(self.github_urls))
 
@@ -188,47 +181,48 @@ async def main():
     parser = argparse.ArgumentParser(
         description="V2Crawler - V2Ray Link Crawler"
     )
+
     parser.add_argument(
-        "--telegram-input", 
+        "-t", "--telegram-input", 
         help="List of Telegram channels to scrape"
     )
     parser.add_argument(
-        "--github-input",
+        "-g", "--github-input",
         help="List of GitHub URLs to scrape for raw content"
     )
     parser.add_argument(
-        "--output", 
+        "-o", "--output", 
         default="vpn_links.json", 
         help="Output file for scraped links"
     )
     parser.add_argument(
-        "--namira-url",
+        "-u", "--namira-url",
         default="http://localhost:8080",
-        help="URL of the namira service",
+        help="URL of the namira service"
     )
     parser.add_argument(
-        "--namira-xapi", 
+        "-x", "--namira-xapi", 
         default="namira-xapi", 
         help="X-API key for namira service"
     )
     parser.add_argument(
-        "--test-timeout",
+        "-T", "--test-timeout",
         type=int,
         default=10,
-        help="Timeout for link testing in seconds",
+        help="Timeout for link testing in seconds"
     )
     # parser.add_argument(
-    #     "--export-only", 
+    #     "-e", "--export-only", 
     #     action="store_true", 
     #     help="Only export links without testing"
     # )
     parser.add_argument(
-        "--debug", 
+        "-d", "--debug", 
         action="store_true", 
         help="Enable debug logging"
     )
     parser.add_argument(
-        "--github-rate-limit",
+        "-r", "--github-rate-limit",
         type=float,
         default=1.0,
         help="Rate limit delay for GitHub requests (seconds)"
