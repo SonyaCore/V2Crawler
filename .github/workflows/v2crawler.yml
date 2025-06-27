@@ -1,0 +1,87 @@
+name: 🛡️ V2Crawler Action
+permissions:
+  contents: write
+on:
+  workflow_dispatch:
+    inputs:
+      test_timeout:
+        description: "Timeout for testing links (seconds)"
+        required: false
+        default: "15"
+      telegram_urls:
+        description: "URL to fetch channels list from"
+        required: false
+        default: "https://raw.githubusercontent.com/NaMiraNet/ChanExt/refs/heads/main/results/channels_latest.txt"
+jobs:
+  scrape-and-test:
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+      
+      - name: Download channels list
+        run: |
+          CHANNELS_URL="${{ github.event.inputs.telegram_urls }}"
+
+          echo "Downloading channels from: $CHANNELS_URL"
+          curl -fsSL "$CHANNELS_URL" -o channels_encoded.txt
+          base64 -d channels_encoded.txt > channels.txt
+          echo "Decoded to $(wc -l < channels.txt) lines"
+          rm channels_encoded.txt
+          
+      - name: Set up Python
+        uses: useblacksmith/setup-python@v4
+        with:
+          python-version: "3.13"
+          
+      - name: Cache Python dependencies
+        uses: blacksmith-2vcpu-ubuntu-2204
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run VPN link scraper
+        env:
+          NAMIRA_XAPI: ${{ secrets.NAMIRA_XAPI }}
+          NAMIRA_URL: ${{ secrets.NAMIRA_URL }}
+        run: |
+          python3 main.py \
+            --telegram-input channels.txt \
+            --namira-xapi "$NAMIRA_XAPI" \
+            --namira-url "$NAMIRA_URL"
+            
+      - name: Upload links and logs
+        if: ${{ success() }}
+        uses: useblacksmith/upload-artifact@v4
+        with:
+          name: vpn-output-${{ github.run_number }}
+          path: |
+            links.txt
+            raplink.log
+            vpn_links.json
+          retention-days: 30
+          
+      - name: Commit vpn_links.json to repository
+        if: ${{ success() }}
+        run: |
+          git config user.name "blacksmith-actions[bot]"
+          git config user.email "blacksmith-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+
+          mv vpn_links.json data/vpn_links.json
+          mv links.txt data/vpn_links.txt
+          
+          git add data/vpn_links.json data/vpn_links.txt
+          git commit -m "Add VPN links for run #${{ github.run_number }}"
+          git push origin HEAD:${{ github.ref_name }}
