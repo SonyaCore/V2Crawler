@@ -12,6 +12,7 @@ lxml==5.4.0
 multidict==6.5.0
 propcache==0.3.2
 requests==2.32.4
+schedule==1.2.2
 soupsieve==2.7
 typing_extensions==4.14.0
 urllib3==2.5.0
