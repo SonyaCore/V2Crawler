@@ -24,6 +24,7 @@ import traceback
 # req session
 import io
 import aiohttp
+import tempfile
 
 # schedular
 import schedule
@@ -43,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+
 class NamiraInterface:
     """Interface to communicate with the Go rayping service"""
 
@@ -51,33 +53,44 @@ class NamiraInterface:
         self.xapi = namira_xapi
 
     async def send_links(self, links_dict: dict) -> Dict:
-        """Send links from a dictionary to namira service (as in-memory file)"""
+        """Send links from a dictionary to namira service as actual file"""
+        temp_file_path = None
         try:
             links_content = "\n".join(str(link) for link in links_dict.values())
+            
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
+                temp_file.write(links_content)
+                temp_file_path = temp_file.name
+            
+            logger.info(f"Created temporary file: {temp_file_path} with {len(links_dict)} links")
 
             headers = {"X-API-Key": self.xapi}
             async with aiohttp.ClientSession(headers=headers) as session:
                 data = aiohttp.FormData()
-                mem_file = io.BytesIO(links_content.encode("utf-8"))
-                data.add_field(
-                    'file',
-                    mem_file,
-                    filename='links.txt',
-                    content_type='text/plain'
-                )
+                
+                # Open and read the actual file
+                with open(temp_file_path, 'rb') as file:
+                    data.add_field(
+                        'file',
+                        file,
+                        filename='links.txt',
+                        content_type='text/plain'
+                    )
 
-                async with session.post(
-                    f"{self.service_url}/scan",
-                    data=data,
-                    timeout=aiohttp.ClientTimeout(total=100)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        logger.info("namira data has been sent to URI")
-                        return result
-                    else:
-                        logger.error(f"namira service error: {response.status}")
-                        return {}
+                    async with session.post(
+                        f"{self.service_url}/scan",
+                        data=data,
+                        timeout=aiohttp.ClientTimeout(total=100)
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            logger.info("namira data has been sent to URI")
+                            return result
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"namira service error: {response.status} - {error_text}")
+                            return {}
         except Exception:
             logger.error(
                 "Error communicating with rayping service on %s:\n%s",
@@ -85,7 +98,14 @@ class NamiraInterface:
                 traceback.format_exc(),
             )
             return {}
-
+        finally:
+            # Clean up temporary file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.debug(f"Cleaned up temporary file: {temp_file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
 
 
 # Updated unified scraper
