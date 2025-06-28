@@ -25,6 +25,9 @@ import traceback
 import io
 import aiohttp
 
+# schedular
+import schedule
+
 # utils
 from utils import read_channels_from_file, read_github_urls_from_file
 
