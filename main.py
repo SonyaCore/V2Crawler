@@ -176,8 +176,10 @@ class V2CrawlerService:
         self.namira_xapi = os.getenv('NAMIRA_XAPI')
         self.namira_url = os.getenv('NAMIRA_URL', 'http://localhost:8080')
         self.channels_url = os.getenv('CHANNELS_URL', 
-                                     'https://raw.githubusercontent.com/NaMiraNet/ChanExt/refs/heads/main/results/channels_latest.txt')
-        self.github_input = os.getenv('GITHUB_INPUT')
+                                     'https://raw.githubusercontent.com/NaMiraNet/RayExt/refs/heads/main/results/channels_latest.txt')
+        self.github_url = os.getenv('GITHUB_URL',
+                                      'https://raw.githubusercontent.com/NaMiraNet/RayExt/refs/heads/main/results/git_latest.txt'
+                                      )
         self.github_rate_limit = float(os.getenv('GITHUB_RATE_LIMIT', '1.0'))
         
         # Scheduler config
@@ -214,6 +216,26 @@ class V2CrawlerService:
             logger.error(f"Error downloading channels list: {e}")
             raise
 
+    def download_github_list(self) -> str:
+        """Download and decode github list from URL"""
+        try:
+            logger.info("Downloading github list...")
+            response = requests.get(self.github_url, timeout=30)
+            response.raise_for_status()
+            
+            content = response.content.decode('utf-8')
+
+            with open('git_channels.txt', 'w') as f:
+                f.write(content)
+                
+            lines_count = len(content.strip().split('\n'))
+            logger.info(f"Downloaded {lines_count} links")
+            return 'git.txt'
+            
+        except Exception as e:
+            logger.error(f"Error downloading links list: {e}")
+            raise
+
     async def run_scraper(self):
         """Main scraping function"""
         try:
@@ -221,18 +243,16 @@ class V2CrawlerService:
 
             # Load sources
             channels_file = self.download_channels_list()
+            github_file = self.download_github_list()
             telegram_channels = read_channels_from_file(channels_file)
+            github_links = read_github_urls_from_file(github_file)
             
-            github_urls = []
-            if self.github_input:
-                github_urls = read_github_urls_from_file(self.github_input)
-
-            logger.info(f"Sources: {len(telegram_channels)} Telegram channels, {len(github_urls)} GitHub URLs")
+            logger.info(f"Sources: {len(telegram_channels)} Telegram channels, {len(github_file)} GitHub URLs")
 
             # Initialize scraper
             scraper = UnifiedChannelScraper(
                 telegram_channels=telegram_channels,
-                github_urls=github_urls,
+                github_urls=github_links,
                 github_rate_limit=self.github_rate_limit
             )
             
@@ -250,7 +270,7 @@ class V2CrawlerService:
             # Save links
             metadata = {
                 "telegram_channels": telegram_channels,
-                "github_urls": github_urls,
+                "github_urls": github_links,
                 "scraping_timestamp": datetime.now().isoformat(),
                 "version": __version__,
                 "environment": "railway" if os.getenv('RAILWAY_ENVIRONMENT') else "local"
@@ -263,7 +283,7 @@ class V2CrawlerService:
                 await self.namira.send_links(content)
 
             # Print summary
-            self.print_summary(links, len(telegram_channels), len(github_urls))
+            self.print_summary(links, len(telegram_channels), len(github_links))
 
         except Exception as e:
             logger.error(f"Scraping process error: {e}")
@@ -382,8 +402,9 @@ async def run_cli():
             "environment": "local"
         }
         link_manager.save_links(links, metadata)
-        
+        link_manager.export_for_testing(links)
         content = link_manager.get_content(links)
+        
         await namira.send_links(content)
 
         # Summary
