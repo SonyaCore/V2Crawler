@@ -308,10 +308,11 @@ async def main():
         logger.info("Running scraper immediately...")
         await run_scraper()
 
+    loop = asyncio.get_running_loop()
     if schedule_enabled:
         logger.info(f"Setting up scheduler to run every {schedule_interval} minutes")
-        schedule.every(schedule_interval).minutes.do(lambda: asyncio.create_task(run_scraper()))
-        
+        schedule.every(schedule_interval).minutes.do(lambda: asyncio.run_coroutine_threadsafe(run_scraper(), loop)
+        )
         # Start scheduler in background thread
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
