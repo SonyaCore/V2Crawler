@@ -310,7 +310,7 @@ async def main():
 
     if schedule_enabled:
         logger.info(f"Setting up scheduler to run every {schedule_interval} minutes")
-        schedule.every(schedule_interval).minute.do(lambda: asyncio.create_task(run_scraper()))
+        schedule.every(schedule_interval).minutes.do(lambda: asyncio.create_task(run_scraper()))
         
         # Start scheduler in background thread
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
