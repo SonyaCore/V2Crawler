@@ -75,7 +75,7 @@ class NamiraInterface:
                         'file',
                         file,
                         filename='links.txt',
-                        content_type='text/plain'
+                        content_type='multipart/form-data'
                     )
 
                     async with session.post(
