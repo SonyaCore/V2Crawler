@@ -22,8 +22,8 @@ import manager
 import traceback
 
 # req session
-# import io
-# import aiohttp
+import io
+import aiohttp
 
 # utils
 from utils import read_channels_from_file, read_github_urls_from_file
@@ -38,6 +38,51 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],  # Railway captures stdout
 )
 logger = logging.getLogger(__name__)
+
+
+class NamiraInterface:
+    """Interface to communicate with the Go rayping service"""
+
+    def __init__(self, namira_xapi: str, namira_url: str = "http://localhost:8080"):
+        self.service_url = namira_url
+        self.xapi = namira_xapi
+
+    async def send_links(self, links_dict: dict) -> Dict:
+        """Send links from a dictionary to namira service (as in-memory file)"""
+        try:
+            links_content = "\n".join(str(link) for link in links_dict.values())
+
+            headers = {"X-API-Key": self.xapi}
+            async with aiohttp.ClientSession(headers=headers) as session:
+                data = aiohttp.FormData()
+                mem_file = io.BytesIO(links_content.encode("utf-8"))
+                data.add_field(
+                    'file',
+                    mem_file,
+                    filename='links.txt',
+                    content_type='text/plain'
+                )
+
+                async with session.post(
+                    f"{self.service_url}/scan",
+                    data=data,
+                    timeout=aiohttp.ClientTimeout(total=100)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info("namira data has been sent to URI")
+                        return result
+                    else:
+                        logger.error(f"namira service error: {response.status}")
+                        return {}
+        except Exception:
+            logger.error(
+                "Error communicating with rayping service on %s:\n%s",
+                self.service_url,
+                traceback.format_exc(),
+            )
+            return {}
+
 
 
 # Updated unified scraper
@@ -192,7 +237,8 @@ async def run_scraper():
             github_rate_limit=github_rate_limit
         )
         link_manager = manager.LinkManager('vpn_links.json')
-
+        namira = NamiraInterface(namira_xapi, namira_url) # type: ignore
+        
         logger.info("Starting scraping from all sources...")
         links = await scraper.scrape_all_sources()
 
@@ -220,7 +266,7 @@ async def run_scraper():
         link_manager.export_for_testing(links)
 
         logger.info("Scraping completed successfully!")
-
+        await namira.send_links(links)        
         # Print summary
         logger.info("=== SCRAPING SUMMARY ===")
         for protocol, link_list in links.items():
@@ -358,7 +404,7 @@ if __name__ == "__main__":
                 github_rate_limit=args.github_rate_limit
             )
             link_manager = manager.LinkManager(args.output)
-
+            namira = NamiraInterface(args.namira_xapi, args.namira_url)
             try:
                 logger.info("Starting scraping from all sources...")
                 links = await scraper.scrape_all_sources()
@@ -386,6 +432,9 @@ if __name__ == "__main__":
                 link_manager.export_for_testing(links)
 
                 logger.info("Scraping completed successfully!")
+
+                logger.info("Sending links to namira service")
+                await namira.send_links(links)
 
                 # Print summary
                 logger.info("=== SCRAPING SUMMARY ===")
