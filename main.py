@@ -230,7 +230,7 @@ class V2CrawlerService:
                 
             lines_count = len(content.strip().split('\n'))
             logger.info(f"Downloaded {lines_count} links")
-            return 'git.txt'
+            return 'git_channels.txt'
             
         except Exception as e:
             logger.error(f"Error downloading links list: {e}")
