@@ -52,45 +52,34 @@ class NamiraInterface:
         self.service_url = namira_url
         self.xapi = namira_xapi
 
-    async def send_links(self, links_dict: dict) -> Dict:
-        """Send links from a dictionary to namira service as actual file"""
-        temp_file_path = None
+    async def send_links(self, links_content: str) :
+        """Send links content directly as text file without creating temporary file"""
         try:
-            links_content = "\n".join(str(link) for link in links_dict.values())
+            logger.info(f"Sending links content with {len(links_content.split())} lines")
             
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
-                temp_file.write(links_content)
-                temp_file_path = temp_file.name
-            
-            logger.info(f"Created temporary file: {temp_file_path} with {len(links_dict)} links")
-
             headers = {"X-API-Key": self.xapi}
             async with aiohttp.ClientSession(headers=headers) as session:
                 data = aiohttp.FormData()
+                data.add_field(
+                    'file',
+                    links_content,
+                    filename='links.txt',
+                    content_type='multipart/form-data'
+                )
                 
-                # Open and read the actual file
-                with open(temp_file_path, 'rb') as file:
-                    data.add_field(
-                        'file',
-                        file,
-                        filename='links.txt',
-                        content_type='multipart/form-data'
-                    )
-
-                    async with session.post(
-                        f"{self.service_url}/scan",
-                        data=data,
-                        timeout=aiohttp.ClientTimeout(total=100)
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            logger.info("namira data has been sent to URI")
-                            return result
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"namira service error: {response.status} - {error_text}")
-                            return {}
+                async with session.post(
+                    f"{self.service_url}/scan",
+                    data=data,
+                    timeout=aiohttp.ClientTimeout(total=100)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info("namira data has been sent to URI")
+                        return result
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"namira service error: {response.status} - {error_text}")
+                        return {}
         except Exception:
             logger.error(
                 "Error communicating with rayping service on %s:\n%s",
@@ -98,15 +87,6 @@ class NamiraInterface:
                 traceback.format_exc(),
             )
             return {}
-        finally:
-            # Clean up temporary file
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.unlink(temp_file_path)
-                    logger.debug(f"Cleaned up temporary file: {temp_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
-
 
 # Updated unified scraper
 class UnifiedChannelScraper:
@@ -287,9 +267,10 @@ async def run_scraper():
 
         logger.info("Exporting links for testing...")
         link_manager.export_for_testing(links)
+        content = link_manager.get_content(links)
 
         logger.info("Scraping completed successfully!")
-        await namira.send_links(links)        
+        await namira.send_links(content)        
         # Print summary
         logger.info("=== SCRAPING SUMMARY ===")
         for protocol, link_list in links.items():
@@ -454,11 +435,12 @@ if __name__ == "__main__":
 
                 logger.info("Exporting links for testing...")
                 link_manager.export_for_testing(links)
+                content = link_manager.get_content(links)
 
                 logger.info("Scraping completed successfully!")
 
                 logger.info("Sending links to namira service")
-                await namira.send_links(links)
+                await namira.send_links(content)
 
                 # Print summary
                 logger.info("=== SCRAPING SUMMARY ===")
