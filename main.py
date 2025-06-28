@@ -247,7 +247,7 @@ async def main():
     """Main function for Railway deployment"""
     # Get scheduling configuration from environment
     schedule_enabled = os.getenv('SCHEDULE_ENABLED', 'true').lower() == 'true'
-    schedule_interval = int(os.getenv('SCHEDULE_INTERVAL_HOURS', '6'))
+    schedule_interval = int(os.getenv('SCHEDULE_INTERVAL_MINUTES', '10'))
     run_immediately = os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true'
 
     logger.info(f"Railway V2Crawler Service {__version__}")
@@ -260,8 +260,8 @@ async def main():
         await run_scraper()
 
     if schedule_enabled:
-        logger.info(f"Setting up scheduler to run every {schedule_interval} hours")
-        schedule.every(schedule_interval).hours.do(lambda: asyncio.create_task(run_scraper()))
+        logger.info(f"Setting up scheduler to run every {schedule_interval} minutes")
+        schedule.every(schedule_interval).minute.do(lambda: asyncio.create_task(run_scraper()))
         
         # Start scheduler in background thread
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
@@ -271,7 +271,7 @@ async def main():
         # Keep the main process alive
         try:
             while True:
-                await asyncio.sleep(300)
+                await asyncio.sleep(60)
                 logger.info("Service running... (Railway keepalive)")
         except KeyboardInterrupt:
             logger.info("Service stopped by user")
