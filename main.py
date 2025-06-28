@@ -10,39 +10,28 @@ import os
 import schedule
 import time
 import threading
-from typing import List, Dict
-from datetime import datetime  
+import traceback
 import requests
 import base64
+from typing import List, Dict
+from datetime import datetime
 
+import aiohttp
 import scrapper
 import extractor
 import duplicate
 import manager
-import traceback
-
-# req session
-import io
-import aiohttp
-import tempfile
-
-# schedular
-import schedule
-
-# utils
 from utils import read_channels_from_file, read_github_urls_from_file
 
+__version__ = "1.2.1"
 
-__version__ = "1.2.0"
-
-# Configure logging for Railway
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],  # Railway captures stdout
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
-
 
 
 class NamiraInterface:
@@ -52,21 +41,21 @@ class NamiraInterface:
         self.service_url = namira_url
         self.xapi = namira_xapi
 
-    async def send_links(self, links_content: str) :
-        """Send links content directly as text file without creating temporary file"""
+    async def send_links(self, links_content: str) -> Dict:
+        """Send links content directly as text file"""
         try:
-            logger.info(f"Sending links content with {len(links_content.split())} lines")
+            logger.info(f"Sending {len(links_content.splitlines())} links to namira service")
             
             headers = {"X-API-Key": self.xapi}
+            data = aiohttp.FormData()
+            data.add_field(
+                'file',
+                links_content,
+                filename='links.txt',
+                content_type='text/plain'
+            )
+            
             async with aiohttp.ClientSession(headers=headers) as session:
-                data = aiohttp.FormData()
-                data.add_field(
-                    'file',
-                    links_content,
-                    filename='links.txt',
-                    content_type='multipart/form-data'
-                )
-                
                 async with session.post(
                     f"{self.service_url}/scan",
                     data=data,
@@ -74,26 +63,24 @@ class NamiraInterface:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        logger.info("namira data has been sent to URI")
+                        logger.info("Links successfully sent to namira service")
                         return result
                     else:
                         error_text = await response.text()
-                        logger.error(f"namira service error: {response.status} - {error_text}")
+                        logger.error(f"Namira service error: {response.status} - {error_text}")
                         return {}
-        except Exception:
-            logger.error(
-                "Error communicating with rayping service on %s:\n%s",
-                self.service_url,
-                traceback.format_exc(),
-            )
+                        
+        except Exception as e:
+            logger.error(f"Error communicating with namira service: {e}")
+            logger.debug(traceback.format_exc())
             return {}
 
-# Updated unified scraper
+
 class UnifiedChannelScraper:
     """Scrape multiple sources (Telegram channels and GitHub repos) for VPN links"""
 
     def __init__(self, telegram_channels: List[str], github_urls: List[str], github_rate_limit: float = 1.0):
-        self.telegram_channels = telegram_channels or []  
+        self.telegram_channels = telegram_channels or []
         self.github_urls = github_urls or []
         self.github_rate_limit = github_rate_limit
         
@@ -115,9 +102,8 @@ class UnifiedChannelScraper:
                     for protocol in all_links:
                         all_links[protocol].extend(links[protocol])
 
-            logger.info(
-                f"Telegram channel {channel}: Found {sum(len(v) for v in all_links.values())} valid links"
-            )
+            total = sum(len(v) for v in all_links.values())
+            logger.info(f"Found {total} links from Telegram channel {channel}")
             return all_links
 
         except Exception as e:
@@ -136,325 +122,280 @@ class UnifiedChannelScraper:
 
             for post in items:
                 if hasattr(post, "content") and post.content:
-                    logger.info(f"Extracting links from content ({len(post.content)} chars) from {post.url}")
-                    links = self.extractor.extract_links(post.content)  
+                    links = self.extractor.extract_links(post.content)
                     for protocol in all_links:
-                        if links[protocol]:
-                            logger.info(f"Found {len(links[protocol])} {protocol} links from {post.url}")
                         all_links[protocol].extend(links[protocol])
 
-            total_found = sum(len(v) for v in all_links.values())
-            logger.info(f"GitHub URLs: Found {total_found} total valid links")
-            
-            # Log breakdown by protocol
-            for protocol, link_list in all_links.items():
-                if link_list:
-                    logger.info(f"  {protocol.upper()}: {len(link_list)} links")
+            total = sum(len(v) for v in all_links.values())
+            logger.info(f"Found {total} total links from GitHub URLs")
             
             return all_links
 
         except Exception as e:
             logger.error(f"Error scraping GitHub URLs: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.debug(traceback.format_exc())
             return {"vmess": [], "vless": [], "ss": [], "trojan": [], "ssr": []}
 
     async def scrape_all_sources(self) -> Dict[str, List[str]]:
         """Scrape all sources (Telegram and GitHub) concurrently"""
         tasks = []
         
+        # Add Telegram channel tasks
         for channel in self.telegram_channels:
             tasks.append(self.scrape_telegram_channel(channel))
             
+        # Add GitHub URLs task
         if self.github_urls:
             tasks.append(self.scrape_github_urls(self.github_urls))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Combine results
         combined_links = {"vmess": [], "vless": [], "ss": [], "trojan": [], "ssr": []}
-
         for result in results:
             if isinstance(result, dict):
                 for protocol in combined_links:
                     combined_links[protocol].extend(result[protocol])
             elif isinstance(result, Exception):
-                logger.error(f"Task failed with exception: {result}")
+                logger.error(f"Task failed: {result}")
 
-        # Final global deduplication across all sources
+        # Deduplicate across all sources
         combined_links = self.duplicate_checker.deduplicate_links(combined_links)
-
         return combined_links
 
 
-def download_channels_list(channels_url: str) -> str:
-    """Download and decode channels list from URL"""
-    try:
-        logger.info(f"Downloading channels from: {channels_url}")
-        response = requests.get(channels_url, timeout=30)
-        response.raise_for_status()
+class V2CrawlerService:
+    """Main service class"""
+    
+    def __init__(self):
+        self.load_config()
+        self.setup_components()
+    
+    def load_config(self):
+        """Load configuration from environment variables"""
+        self.namira_xapi = os.getenv('NAMIRA_XAPI')
+        self.namira_url = os.getenv('NAMIRA_URL', 'http://localhost:8080')
+        self.channels_url = os.getenv('CHANNELS_URL', 
+                                     'https://raw.githubusercontent.com/NaMiraNet/ChanExt/refs/heads/main/results/channels_latest.txt')
+        self.github_input = os.getenv('GITHUB_INPUT')
+        self.github_rate_limit = float(os.getenv('GITHUB_RATE_LIMIT', '1.0'))
         
-        # Decode base64 content
-        decoded_content = base64.b64decode(response.content).decode('utf-8')
-        
-        # Save to temporary file
-        with open('channels.txt', 'w') as f:
-            f.write(decoded_content)
+        # Scheduler config
+        self.schedule_enabled = os.getenv('SCHEDULE_ENABLED', 'true').lower() == 'true'
+        self.schedule_interval = int(os.getenv('SCHEDULE_INTERVAL_MINUTES', '60'))
+        self.run_immediately = os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true'
+    
+    def setup_components(self):
+        """Initialize service components"""
+        self.link_manager = manager.LinkManager('vpn_links.json')
+        if self.namira_xapi:
+            self.namira = NamiraInterface(self.namira_xapi, self.namira_url)
+        else:
+            self.namira = None
+            logger.warning("NAMIRA_XAPI not set - will not send links to namira service")
+
+    def download_channels_list(self) -> str:
+        """Download and decode channels list from URL"""
+        try:
+            logger.info("Downloading channels list...")
+            response = requests.get(self.channels_url, timeout=30)
+            response.raise_for_status()
             
-        lines_count = len(decoded_content.strip().split('\n'))
-        logger.info(f"Downloaded and decoded {lines_count} lines to channels.txt")
-        return 'channels.txt'
-        
-    except Exception as e:
-        logger.error(f"Error downloading channels list: {e}")
-        raise
+            decoded_content = base64.b64decode(response.content).decode('utf-8')
+            
+            with open('channels.txt', 'w') as f:
+                f.write(decoded_content)
+                
+            lines_count = len(decoded_content.strip().split('\n'))
+            logger.info(f"Downloaded {lines_count} channels")
+            return 'channels.txt'
+            
+        except Exception as e:
+            logger.error(f"Error downloading channels list: {e}")
+            raise
 
+    async def run_scraper(self):
+        """Main scraping function"""
+        try:
+            logger.info(f"V2Crawler Service {__version__} starting...")
 
-async def run_scraper():
-    """Main scraping function"""
-    try:
-        # Get environment variables
-        namira_xapi = os.getenv('NAMIRA_XAPI')
-        namira_url = os.getenv('NAMIRA_URL', 'http://localhost:8080')
-        channels_url = os.getenv('CHANNELS_URL', 
-                                'https://raw.githubusercontent.com/NaMiraNet/ChanExt/refs/heads/main/results/channels_latest.txt')
-        github_input = os.getenv('GITHUB_INPUT')
-        test_timeout = int(os.getenv('TEST_TIMEOUT', '15'))
-        github_rate_limit = float(os.getenv('GITHUB_RATE_LIMIT', '1.0'))
+            # Load sources
+            channels_file = self.download_channels_list()
+            telegram_channels = read_channels_from_file(channels_file)
+            
+            github_urls = []
+            if self.github_input:
+                github_urls = read_github_urls_from_file(self.github_input)
 
-        logger.info(f"V2Crawler Service {__version__} starting on Railway...")
+            logger.info(f"Sources: {len(telegram_channels)} Telegram channels, {len(github_urls)} GitHub URLs")
 
-        # Download channels list
-        channels_file = download_channels_list(channels_url)
-        telegram_channels = read_channels_from_file(channels_file)
-        logger.info(f"Telegram channels to scrape: {len(telegram_channels)}")
+            # Initialize scraper
+            scraper = UnifiedChannelScraper(
+                telegram_channels=telegram_channels,
+                github_urls=github_urls,
+                github_rate_limit=self.github_rate_limit
+            )
+            
+            # Scrape all sources
+            logger.info("Starting scraping from all sources...")
+            links = await scraper.scrape_all_sources()
 
-        github_urls = []
-        if github_input:
-            github_urls = read_github_urls_from_file(github_input)
-            logger.info(f"GitHub URLs to scrape: {len(github_urls)}")
+            total_links = sum(len(v) for v in links.values())
+            logger.info(f"Total valid links found: {total_links}")
 
-        # Initialize components with unified scraper
-        scraper = UnifiedChannelScraper(
-            telegram_channels=telegram_channels,
-            github_urls=github_urls,
-            github_rate_limit=github_rate_limit
-        )
-        link_manager = manager.LinkManager('vpn_links.json')
-        namira = NamiraInterface(namira_xapi, namira_url) # type: ignore
-        
-        logger.info("Starting scraping from all sources...")
-        links = await scraper.scrape_all_sources()
+            if total_links == 0:
+                logger.warning("No valid links found")
+                return
 
-        total_links = sum(len(v) for v in links.values())
-        logger.info(f"Total valid links found: {total_links}")
+            # Save links
+            metadata = {
+                "telegram_channels": telegram_channels,
+                "github_urls": github_urls,
+                "scraping_timestamp": datetime.now().isoformat(),
+                "version": __version__,
+                "environment": "railway" if os.getenv('RAILWAY_ENVIRONMENT') else "local"
+            }
+            self.link_manager.save_links(links, metadata)
 
-        if total_links == 0:
-            logger.warning("No valid links found. Check your input sources and try again.")
-            return
+            # Export and send to namira
+            content = self.link_manager.get_content(links)
+            if self.namira:
+                await self.namira.send_links(content)
 
-        logger.info("Saving validated links...")
-        metadata = {
-            "telegram_channels": telegram_channels,
-            "github_urls": github_urls,
-            "scraping_timestamp": datetime.now().isoformat(),
-            "version": __version__,
-            "validation_enabled": True,
-            "source_types": ["telegram", "github"] if telegram_channels and github_urls else 
-                           ["telegram"] if telegram_channels else ["github"],
-            "environment": "railway"
-        }
-        link_manager.save_links(links, metadata)
+            # Print summary
+            self.print_summary(links, len(telegram_channels), len(github_urls))
 
-        logger.info("Exporting links for testing...")
-        link_manager.export_for_testing(links)
-        content = link_manager.get_content(links)
+        except Exception as e:
+            logger.error(f"Scraping process error: {e}")
+            logger.debug(traceback.format_exc())
 
-        logger.info("Scraping completed successfully!")
-        await namira.send_links(content)        
-        # Print summary
+    def print_summary(self, links: Dict[str, List[str]], telegram_count: int, github_count: int):
+        """Print scraping summary"""
         logger.info("=== SCRAPING SUMMARY ===")
         for protocol, link_list in links.items():
             if link_list:
                 logger.info(f"{protocol.upper()}: {len(link_list)} links")
         
-        logger.info(f"Total sources: {len(telegram_channels) + len(github_urls)}")
-        logger.info(f"Telegram channels: {len(telegram_channels)}")
-        logger.info(f"GitHub repositories: {len(github_urls)}")
+        logger.info(f"Total sources: {telegram_count + github_count}")
+        logger.info(f"Telegram channels: {telegram_count}")
+        logger.info(f"GitHub repositories: {github_count}")
 
-    except Exception as e:
-        logger.error(f"Scraping process error: {e}")
-        logger.error(traceback.format_exc())
+    async def start_service(self):
+        """Start the service with optional scheduling"""
+        logger.info(f"V2Crawler Service {__version__}")
+        logger.info(f"Schedule: {'enabled' if self.schedule_enabled else 'disabled'}")
+        
+        if self.schedule_enabled:
+            logger.info(f"Schedule interval: {self.schedule_interval} minutes")
 
+        # Run immediately if configured
+        if self.run_immediately:
+            await self.run_scraper()
 
-def run_scheduler():
-    """Run the scheduler in a separate thread"""
-    while True:
-        schedule.run_pending()
-        time.sleep(60)  # Check every minute
+        # Setup scheduler if enabled
+        if self.schedule_enabled:
+            loop = asyncio.get_running_loop()
+            schedule.every(self.schedule_interval).minutes.do(
+                lambda: asyncio.run_coroutine_threadsafe(self.run_scraper(), loop)
+            )
+            
+            # Start scheduler thread
+            scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
+            scheduler_thread.start()
+            logger.info("Scheduler started")
+
+            # Keep service alive
+            try:
+                while True:
+                    await asyncio.sleep(60)
+                    logger.debug("Service heartbeat")
+            except KeyboardInterrupt:
+                logger.info("Service stopped by user")
+        else:
+            logger.info("Scheduling disabled - service will exit")
+
+    def _run_scheduler(self):
+        """Run the scheduler in a separate thread"""
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
 
 
 async def main():
-    """Main function for Railway deployment"""
-    # Get scheduling configuration from environment
-    schedule_enabled = os.getenv('SCHEDULE_ENABLED', 'true').lower() == 'true'
-    schedule_interval = int(os.getenv('SCHEDULE_INTERVAL_MINUTES', '10'))
-    run_immediately = os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true'
-
-    logger.info(f"Railway V2Crawler Service {__version__}")
-    logger.info(f"Schedule enabled: {schedule_enabled}")
-    logger.info(f"Schedule interval: {schedule_interval} hours")
-    logger.info(f"Run immediately: {run_immediately}")
-
-    if run_immediately:
-        logger.info("Running scraper immediately...")
-        await run_scraper()
-
-    loop = asyncio.get_running_loop()
-    if schedule_enabled:
-        logger.info(f"Setting up scheduler to run every {schedule_interval} minutes")
-        schedule.every(schedule_interval).minutes.do(lambda: asyncio.run_coroutine_threadsafe(run_scraper(), loop)
-        )
-        # Start scheduler in background thread
-        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-        scheduler_thread.start()
-        logger.info("Scheduler started in background thread")
-
-        # Keep the main process alive
-        try:
-            while True:
-                await asyncio.sleep(60)
-                logger.info("Service running... (Railway keepalive)")
-        except KeyboardInterrupt:
-            logger.info("Service stopped by user")
+    """entry point for Railway deployment"""
+    if os.getenv('RAILWAY_ENVIRONMENT'):
+        logger.info("Running in Railway environment")
+        service = V2CrawlerService()
+        await service.start_service()
     else:
-        logger.info("Scheduling disabled. Service will exit after initial run.")
+        await run_cli()
+
+
+async def run_cli():
+    """CLI interface for local development"""
+    parser = argparse.ArgumentParser(description="V2Crawler - V2Ray Link Crawler")
+    parser.add_argument("-t", "--telegram-input", help="Telegram channels file")
+    parser.add_argument("-g", "--github-input", help="GitHub URLs file")
+    parser.add_argument("-o", "--output", default="vpn_links.json", help="Output file")
+    parser.add_argument("-u", "--namira-url", default="http://localhost:8080", help="Namira service URL")
+    parser.add_argument("-x", "--namira-xapi", default="namira-xapi", help="Namira X-API key")
+    parser.add_argument("-r", "--github-rate-limit", type=float, default=1.0, help="GitHub rate limit (seconds)")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    if not args.telegram_input and not args.github_input:
+        logger.error("At least one input source must be provided")
+        exit(1)
+
+    # Load sources
+    telegram_channels = read_channels_from_file(args.telegram_input) if args.telegram_input else []
+    github_urls = read_github_urls_from_file(args.github_input) if args.github_input else []
+
+    # Initialize components
+    scraper = UnifiedChannelScraper(
+        telegram_channels=telegram_channels,
+        github_urls=github_urls,
+        github_rate_limit=args.github_rate_limit
+    )
+    link_manager = manager.LinkManager(args.output)
+    namira = NamiraInterface(args.namira_xapi, args.namira_url)
+
+    try:
+        # Scrape links
+        links = await scraper.scrape_all_sources()
+        total_links = sum(len(v) for v in links.values())
+        
+        if total_links == 0:
+            logger.warning("No valid links found")
+            return
+
+        # Save and send
+        metadata = {
+            "telegram_channels": telegram_channels,
+            "github_urls": github_urls,
+            "scraping_timestamp": datetime.now().isoformat(),
+            "version": __version__,
+            "environment": "local"
+        }
+        link_manager.save_links(links, metadata)
+        
+        content = link_manager.get_content(links)
+        await namira.send_links(content)
+
+        # Summary
+        logger.info("=== SCRAPING SUMMARY ===")
+        for protocol, link_list in links.items():
+            if link_list:
+                logger.info(f"{protocol.upper()}: {len(link_list)} links")
+
+    except Exception as e:
+        logger.error(f"CLI process error: {e}")
+        logger.debug(traceback.format_exc())
 
 
 if __name__ == "__main__":
-    # Check if running in Railway environment
-    if os.getenv('RAILWAY_ENVIRONMENT'):
-        logger.info("Detected Railway environment")
-        asyncio.run(main())
-    else:
-        # Fallback to original CLI interface for local development
-        parser = argparse.ArgumentParser(
-            description="V2Crawler - V2Ray Link Crawler"
-        )
-
-        parser.add_argument(
-            "-t", "--telegram-input", 
-            help="List of Telegram channels to scrape"
-        )
-        parser.add_argument(
-            "-g", "--github-input",
-            help="List of GitHub URLs to scrape for raw content"
-        )
-        parser.add_argument(
-            "-o", "--output", 
-            default="vpn_links.json", 
-            help="Output file for scraped links"
-        )
-        parser.add_argument(
-            "-u", "--namira-url",
-            default="http://localhost:8080",
-            help="URL of the namira service"
-        )
-        parser.add_argument(
-            "-x", "--namira-xapi", 
-            default="namira-xapi", 
-            help="X-API key for namira service"
-        )
-        parser.add_argument(
-            "-T", "--test-timeout",
-            type=int,
-            default=10,
-            help="Timeout for link testing in seconds"
-        )
-        parser.add_argument(
-            "-d", "--debug", 
-            action="store_true", 
-            help="Enable debug logging"
-        )
-        parser.add_argument(
-            "-r", "--github-rate-limit",
-            type=float,
-            default=1.0,
-            help="Rate limit delay for GitHub requests (seconds)"
-        )
-
-        args = parser.parse_args()
-
-        if args.debug:
-            logging.getLogger().setLevel(logging.DEBUG)
-
-        if not args.telegram_input and not args.github_input:
-            logger.error("At least one input source (--telegram-input or --github-input) must be provided")
-            exit(1)
-
-        telegram_channels = []
-        github_urls = []
-        
-        if args.telegram_input:
-            telegram_channels = read_channels_from_file(args.telegram_input)
-            logger.info(f"Telegram channels to scrape: {telegram_channels}")
-        
-        if args.github_input:
-            github_urls = read_github_urls_from_file(args.github_input)
-            logger.info(f"GitHub URLs to scrape: {github_urls}")
-
-        async def run_local():
-            scraper = UnifiedChannelScraper(
-                telegram_channels=telegram_channels,
-                github_urls=github_urls,
-                github_rate_limit=args.github_rate_limit
-            )
-            link_manager = manager.LinkManager(args.output)
-            namira = NamiraInterface(args.namira_xapi, args.namira_url)
-            try:
-                logger.info("Starting scraping from all sources...")
-                links = await scraper.scrape_all_sources()
-
-                total_links = sum(len(v) for v in links.values())
-                logger.info(f"Total valid links found: {total_links}")
-
-                if total_links == 0:
-                    logger.warning("No valid links found. Check your input sources and try again.")
-                    return
-
-                logger.info("Saving validated links...")
-                metadata = {
-                    "telegram_channels": telegram_channels,
-                    "github_urls": github_urls,
-                    "scraping_timestamp": datetime.now().isoformat(),
-                    "version": __version__,
-                    "validation_enabled": True,
-                    "source_types": ["telegram", "github"] if telegram_channels and github_urls else 
-                                   ["telegram"] if telegram_channels else ["github"]
-                }
-                link_manager.save_links(links, metadata)
-
-                logger.info("Exporting links for testing...")
-                link_manager.export_for_testing(links)
-                content = link_manager.get_content(links)
-
-                logger.info("Scraping completed successfully!")
-
-                logger.info("Sending links to namira service")
-                await namira.send_links(content)
-
-                # Print summary
-                logger.info("=== SCRAPING SUMMARY ===")
-                for protocol, link_list in links.items():
-                    if link_list:
-                        logger.info(f"{protocol.upper()}: {len(link_list)} links")
-                
-                logger.info(f"Total sources: {len(telegram_channels) + len(github_urls)}")
-                logger.info(f"Telegram channels: {len(telegram_channels)}")
-                logger.info(f"GitHub repositories: {len(github_urls)}")
-
-            except Exception as e:
-                logger.error(f"Main process error: {e}")
-                logger.error(traceback.format_exc())
-                raise
-
-        asyncio.run(run_local())
+    asyncio.run(main())
