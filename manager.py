@@ -62,3 +62,22 @@ class LinkManager:
             logger.info(f"Exported {total_links} validated links for testing to {filename}")
         except Exception as e:
             logger.error(f"Error exporting links for testing: {e}")
+
+    def get_content(self, links: Dict[str, List[str]]) -> str:
+        """Export all links to a string for the Go testing service"""
+        try:
+            content = []
+            total_links = 0
+            
+            for protocol, protocol_links in links.items():
+                for link in protocol_links:
+                    content.append(link)
+                    total_links += 1
+            
+            result = '\n'.join(content)
+            logger.info(f"Exported {total_links} validated links for testing")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error exporting links for testing: {e}")
+            return ""
